@@ -16,8 +16,10 @@ from tensorflow.keras.models import load_model
 from sklearn.model_selection import train_test_split
 from keras.layers import Dense,Conv2D,MaxPooling2D,Flatten,GlobalMaxPooling2D
 
-Base_dir='datasets/UTKFace/'
-MODEL_PATH = 'models/model.keras'
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+Base_dir = os.path.join(PROJECT_DIR, 'datasets', 'UTKFace')
+MODEL_PATH = os.path.join(PROJECT_DIR, 'models', 'model.keras')
+WEIGHTS_PATH = os.path.join(PROJECT_DIR, 'models', 'model.weights.h5')
 if not os.path.exists(MODEL_PATH):
     images=os.listdir(Base_dir)
     image_paths = []
@@ -76,10 +78,10 @@ else:
     X_train,X_test,y_train,y_test=train_test_split(X,Y,test_size=0.2)
     X_train.shape
     model.fit(X_train,y_train,epochs=10, validation_data=(X_test,y_test))
-    model.save_weights('models/model.weights.h5')
+    model.save_weights(WEIGHTS_PATH)
     model.save(MODEL_PATH)
 detector = cv2.CascadeClassifier(
-    "models/haarcascade_frontalface_default.xml"
+    os.path.join(PROJECT_DIR, "models", "haarcascade_frontalface_default.xml")
 )
 
 cam = cv2.VideoCapture(0)  # Try 1 if camera 0 does not work
