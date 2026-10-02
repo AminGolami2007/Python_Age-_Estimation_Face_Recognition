@@ -1,8 +1,3 @@
-#1)Download Dataset
-
-#https://drive.google.com/drive/folders/19zV45_NQzrBPLzFymXeNZiufxbeENGth
-
-#2) Unzip
 import cv2
 import os
 import numpy as np
