@@ -18,16 +18,22 @@ from tensorflow.keras.callbacks import (
 
 SEED = 42
 
+# Image size expected by the CNN model.
+# Larger images give more detail, but they also increase memory usage.
 IMAGE_SIZE = (128, 128)
 BATCH_SIZE = 32
 EPOCHS = 50
 
+# We keep 10% for testing and 10% for validation from the remaining data.
+# This keeps the training set large enough while still measuring generalization.
 TEST_SIZE = 0.10
 VALIDATION_SIZE = 0.10
 
+# UTKFace is the folder that contains facial images and age labels in filenames.
 DATASET_DIR = "datasets/UTKFace"
 MODEL_DIR = "models"
 
+# Final saved model and face detector file.
 MODEL_PATH = os.path.join(MODEL_DIR, "age_model.keras")
 FACE_CASCADE_PATH = os.path.join(
     MODEL_DIR,
@@ -97,6 +103,10 @@ def get_dataset():
 
     valid_extensions = (".jpg", ".jpeg", ".png")
 
+    # UTKFace file names usually look like:
+    # 34_1_0_20170110123456789.jpg
+    # The first part ("34") is the age label.
+    # We ignore files that are not images or whose age cannot be parsed.
     for filename in os.listdir(DATASET_DIR):
 
         if not filename.lower().endswith(valid_extensions):
@@ -112,7 +122,7 @@ def get_dataset():
         except ValueError:
             continue
 
-        # UTKFace age range
+        # Keep only reasonable ages for training.
         if 0 <= age <= 120:
             image_paths.append(
                 os.path.join(DATASET_DIR, filename)
@@ -169,9 +179,9 @@ def split_dataset(image_paths, ages):
 
     age_bins = create_age_bins(ages)
 
-    # First:
-    # 90% -> train + validation
-    # 10% -> test
+    # Step 1:
+    # Split the full dataset into train+validation and test.
+    # We use stratify so that each age group is represented fairly in both sets.
     (
         train_val_paths,
         test_paths,
@@ -188,8 +198,9 @@ def split_dataset(image_paths, ages):
         stratify=age_bins,
     )
 
-    # Validation is 10% of the entire dataset.
-    # Since train_val is 90%, validation ratio inside train_val is:
+    # Step 2:
+    # Split the remaining 90% into train and validation.
+    # validation_ratio is calculated so that validation becomes exactly 10% of the whole dataset.
     validation_ratio = VALIDATION_SIZE / (1.0 - TEST_SIZE)
 
     (
@@ -284,23 +295,29 @@ def create_dataset(image_paths, ages, training=False):
     Creates an efficient tf.data pipeline.
     """
 
+    # tf.data is TensorFlow's high-performance pipeline for images.
+    # It loads data lazily and can process batches efficiently in parallel.
     dataset = tf.data.Dataset.from_tensor_slices(
         (image_paths, ages)
     )
 
     if training:
+        # Shuffle the images so that the model does not learn a fixed order.
         dataset = dataset.shuffle(
             buffer_size=len(image_paths),
             seed=SEED,
             reshuffle_each_iteration=True,
         )
 
+    # Convert each image path into a real image tensor and normalize it to [0,1].
     dataset = dataset.map(
         load_and_preprocess_image,
         num_parallel_calls=AUTOTUNE,
     )
 
     if training:
+        # Augmentation makes the model less sensitive to tiny variations such as
+        # horizontal flips, rotations, zooms, and contrast changes.
         dataset = dataset.map(
             lambda image, age: (
                 data_augmentation(image, training=True),
@@ -309,11 +326,13 @@ def create_dataset(image_paths, ages, training=False):
             num_parallel_calls=AUTOTUNE,
         )
 
+    # Batch several examples together so the model updates more efficiently.
     dataset = dataset.batch(
         BATCH_SIZE,
         drop_remainder=False,
     )
 
+    # Prefetch keeps the next mini-batches ready while the model is training.
     dataset = dataset.prefetch(AUTOTUNE)
 
     return dataset
@@ -334,6 +353,7 @@ def build_model():
         One continuous age value
     """
 
+    # Input layer: the CNN receives a 128x128 RGB face image.
     inputs = layers.Input(
         shape=(IMAGE_SIZE[0], IMAGE_SIZE[1], 3),
         name="image",
@@ -342,7 +362,8 @@ def build_model():
     x = inputs
 
     # -------------------------
-    # Block 1
+    # Block 1: low-level feature extraction.
+    # Early layers detect basic edges and patterns.
     # -------------------------
     x = layers.Conv2D(
         32,
@@ -355,7 +376,7 @@ def build_model():
     x = layers.MaxPooling2D((2, 2))(x)
 
     # -------------------------
-    # Block 2
+    # Block 2: more complex facial features such as eyes, nose, and texture.
     # -------------------------
     x = layers.Conv2D(
         64,
@@ -368,7 +389,7 @@ def build_model():
     x = layers.MaxPooling2D((2, 2))(x)
 
     # -------------------------
-    # Block 3
+    # Block 3: deeper abstraction of the face structure.
     # -------------------------
     x = layers.Conv2D(
         128,
@@ -381,7 +402,7 @@ def build_model():
     x = layers.MaxPooling2D((2, 2))(x)
 
     # -------------------------
-    # Block 4
+    # Block 4: high-level features used for final age estimation.
     # -------------------------
     x = layers.Conv2D(
         256,
@@ -394,7 +415,9 @@ def build_model():
     x = layers.MaxPooling2D((2, 2))(x)
 
     # -------------------------
-    # Regression head
+    # Regression head:
+    # The network converts the learned features into a single continuous number.
+    # This number represents the predicted age in years.
     # -------------------------
     x = layers.GlobalAveragePooling2D()(x)
 
@@ -477,6 +500,10 @@ def train_model():
     print("\nModel summary:")
     model.summary()
 
+    # These callbacks help the model train more reliably:
+    # - EarlyStopping: stops training if validation error stops improving.
+    # - ModelCheckpoint: saves the best model automatically.
+    # - ReduceLROnPlateau: lowers learning rate when progress stalls.
     callbacks = [
         EarlyStopping(
             monitor="val_mae",
@@ -599,21 +626,24 @@ def run_webcam(model):
     try:
         while True:
 
+            # Read one frame from the webcam.
             success, frame = camera.read()
 
             if not success:
                 print("Failed to read frame from webcam.")
                 break
 
-            # Mirror the webcam image.
+            # Mirror the webcam image so it feels natural to the user.
             frame = cv2.flip(frame, 1)
 
-            # Haar Cascade works with grayscale.
+            # Haar cascade works on grayscale images for faster face detection.
             gray = cv2.cvtColor(
                 frame,
                 cv2.COLOR_BGR2GRAY,
             )
 
+            # detectMultiScale finds face rectangles in the image.
+            # scaleFactor and minNeighbors control sensitivity.
             faces = face_cascade.detectMultiScale(
                 gray,
                 scaleFactor=1.1,
@@ -623,46 +653,44 @@ def run_webcam(model):
 
             for (x, y, w, h) in faces:
 
-                # Keep coordinates inside the frame.
+                # Keep coordinates inside the frame boundaries.
                 x1 = max(0, x)
                 y1 = max(0, y)
                 x2 = min(frame.shape[1], x + w)
                 y2 = min(frame.shape[0], y + h)
 
+                # Crop only the detected face region.
                 face = frame[y1:y2, x1:x2]
 
                 if face.size == 0:
                     continue
 
-                # Resize to model input size.
+                # Resize to match the CNN input size exactly.
                 face = cv2.resize(
                     face,
                     IMAGE_SIZE,
                     interpolation=cv2.INTER_AREA,
                 )
 
-                # OpenCV uses BGR.
-                # Model expects RGB.
+                # OpenCV reads images in BGR order, but the CNN expects RGB.
                 face = cv2.cvtColor(
                     face,
                     cv2.COLOR_BGR2RGB,
                 )
 
-                # Normalize to [0, 1].
+                # Normalize pixel values to [0, 1] to match the training pipeline.
                 face = face.astype(
                     np.float32
                 ) / 255.0
 
-                # Add batch dimension:
-                # (128, 128, 3)
-                # ->
-                # (1, 128, 128, 3)
+                # Add a batch dimension:
+                # (128, 128, 3) -> (1, 128, 128, 3)
                 face = np.expand_dims(
                     face,
                     axis=0,
                 )
 
-                # Predict age.
+                # Run the trained model on this single face and estimate the age.
                 prediction = model.predict(
                     face,
                     verbose=0,
@@ -672,7 +700,7 @@ def run_webcam(model):
                     np.asarray(prediction).reshape(-1)[0]
                 )
 
-                # Keep result in valid UTKFace age range.
+                # Keep predicted age inside the valid UTKFace range.
                 age = np.clip(
                     age,
                     0,
@@ -681,7 +709,7 @@ def run_webcam(model):
 
                 age_text = f"Age: {int(round(age))}"
 
-                # Draw face rectangle.
+                # Draw a green rectangle around the detected face.
                 cv2.rectangle(
                     frame,
                     (x1, y1),
@@ -690,7 +718,7 @@ def run_webcam(model):
                     2,
                 )
 
-                # Draw age text.
+                # Put the estimated age above the face box.
                 text_y = max(
                     30,
                     y1 - 10,
